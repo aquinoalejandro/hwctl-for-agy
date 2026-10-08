@@ -1,233 +1,152 @@
-# hwctl (Hardware Control & Diagnostic Layer)
+# hwctl: Especificación de Articulaciones y Sensores de Hardware para Agente IA (Antigravity)
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%28Arch%29-lightgrey.svg)](https://github.com/aquinoalejandro/hwctl-for-agy)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-25%20passed-success.svg)](tests/)
-
-**hwctl** es la capa física de herramientas, telemetría y control de hardware diseñada para ser operada por el agente de IA **Antigravity**. Actúa como los **ojos y manos** del agente en el sistema operativo, permitiéndole interactuar de forma segura con la GPU y el equipo sin tomar decisiones diagnósticas por su cuenta.
+**Identificador de Protocolo:** `hwctl-agent-v1`  
+**Destinatario:** Agente de Inteligencia Artificial Externo (`Antigravity`)  
+**Naturaleza:** Interfaz Determinista de Percepción y Actuación sobre Hardware de Computadora (Windows / Linux)  
+**Objetivo de Hardware:** Arquitecturas de GPU AMD Radeon (con enfoque en Polaris 10/20 / RX 580) y extensibilidad para NVIDIA e Intel.
 
 ---
 
-## 📌 Tabla de Contenidos
-1. [Filosofía y Separación de Responsabilidades](#-filosofía-y-separación-de-responsabilidades)
-2. [Arquitectura del Sistema](#-arquitectura-del-sistema)
-3. [Diferencias por Plataforma (Windows vs Linux / Arch)](#-diferencias-por-plataforma-windows-vs-linux--arch)
-4. [Instalación y Requisitos](#-instalación-y-requisitos)
-5. [Catálogo Completo de Herramientas CLI](#-catálogo-completo-de-herramientas-cli)
-6. [Contratos y Esquemas JSON](#-contratos-y-esquemas-json)
-7. [Mecanismos de Seguridad y Rollback](#-mecanismos-de-seguridad-y-rollback)
-8. [Modo de Simulación y Laboratorio (Mock)](#-modo-de-simulación-y-laboratorio-mock)
-9. [Flujo de Diagnóstico Típico para Antigravity](#-flujo-de-diagnóstico-típico-para-antigravity)
-10. [Ejecución de Pruebas Automatizadas](#-ejecución-de-pruebas-automatizadas)
-11. [Estructura del Proyecto](#-estructura-del-proyecto)
+## 1. Modelo Operativo y Filosofía de Agente
+
+Este software constituye el **aparato sensomotor** de Antigravity. No contiene lógica deliberativa, árboles de decisión heurísticos ni motores de inferencia. La división de responsabilidades es estricta:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ANTIGRAVITY (AGENTE COGNITIVO)                       │
+│  - Formulación de hipótesis (ej: "ventilador atascado vs VBIOS")       │
+│  - Selección y secuenciación de experimentos                           │
+│  - Inferencia bayesiana y correlación de deltas térmicos/RPM           │
+│  - Decisión de mitigación o solicitud de intervención humana           │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ CLI / JSON (stdin/stdout)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      HWCTL (CONTROLADOR SENSOMOTOR)                    │
+│  - Percepción: Sensores físicos, buses I2C/SMBus, registros ADL/sysfs  │
+│  - Actuación: Ciclos de trabajo PWM, escalones térmicos, compute load  │
+│  - Seguridad: Invariantes físicas, timeouts, watchdog, rollback atexit │
+│  - Determinismo: Salida 100% JSON en stdout; errores tipados con código│
+└────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 🧠 Filosofía y Separación de Responsabilidades
+## 2. Topología Física y Canales de Hardware (AMD Polaris / RX 580)
 
-> [!IMPORTANT]
-> **El software NO contiene un agente de IA ni toma decisiones autónomas.**
-> * **Antigravity** es el **Cerebro**: analiza datos, formula hipótesis, decide qué pruebas correr, interpreta los resultados y propone soluciones.
-> * **hwctl** es el **Cuerpo**: observa el estado físico, ejecuta únicamente acciones explícitas y seguras, y devuelve telemetría estructurada y determinista.
->
-> **Regla de oro**: El código de `hwctl` jamás contendrá heurísticas como `if temp > 90: fan_up()` ni emitirá veredictos como *"la GPU está fallando"*. Su única tarea es: **Observar → Ejecutar con seguridad → Reportar datos puros**.
+Para que Antigravity pueda razonar con precisión sobre la física del dispositivo, debe comprender la cadena de control subyacente:
+
+```text
+                                  ┌───────────────────────┐
+                                  │      Antigravity      │
+                                  └───────────┬───────────┘
+                                              │ hwctl
+                                              ▼
+                        ┌───────────────────────────────────────────┐
+                        │      Capa de Abstracción de Driver        │
+                        │  - Windows: atiadlxx.dll (Overdrive5/N)   │
+                        │  - Linux: amdgpu driver (sysfs / hwmon)   │
+                        └─────────────────────┬─────────────────────┘
+                                              │
+                      ┌───────────────────────┴───────────────────────┐
+                      ▼                                               ▼
+         ┌─────────────────────────┐                     ┌─────────────────────────┐
+         │     PowerPlay Table     │                     │ SMC (System Management  │
+         │ (VBIOS ROM / PPTables)  │                     │       Controller)       │
+         └────────────┬────────────┘                     └────────────┬────────────┘
+                      │ Curvas fijas / min_pwm                        │
+                      └───────────────────────┬───────────────────────┘
+                                              │ Registro PWM (0-255 / 0-100%)
+                                              ▼
+                             ┌─────────────────────────────────┐
+                             │ Conector del Cooler (4 Pines)   │
+                             ├─────────────────────────────────┤
+                             │ Pin 1: GND                      │
+                             │ Pin 2: 12V DC                   │
+                             │ Pin 3: TACH (Sensor Hall / RPM) │ ──► hwctl: fan.rpm
+                             │ Pin 4: PWM (Control de pulsos)  │ ◄── hwctl: set_fan_percent
+                             └─────────────────────────────────┘
+```
+
+### Discrepancia entre `reported_percent` y `reported_rpm`
+* `reported_percent`: Refleja el **registro lógico de ciclo de trabajo** escrito en el controlador PWM.
+* `reported_rpm`: Refleja la **frecuencia de pulsos del sensor de efecto Hall** en el motor del ventilador leída por el tacómetro del SMC.
+* **Inferencia para Antigravity**: Si `reported_percent` varía de 25% a 100% pero `reported_rpm` permanece estático (ej: `1127 RPM` constante) o en `0 RPM`, el fallo **no es del software ni del driver**, sino:
+  1. Cable de señal PWM cortado o desprendido en el cabezal de 4 pines.
+  2. Circuito integrado controlador PWM del PCB quemado.
+  3. Bloqueo mecánico / rodamiento del ventilador trabado.
+  4. VBIOS modificado (típico de minería) con tablas PowerPlay que ignoran escrituras al registro dinámico.
 
 ---
 
-## 🏗 Arquitectura del Sistema
+## 3. Matriz de Estados y Ciclo de Vida de Ejecución
 
-El sistema está diseñado en capas desacopladas mediante el patrón *Provider*, garantizando extensibilidad futura hacia NVIDIA e Intel sin acoplar la lógica a una GPU específica.
+`hwctl` implementa una máquina de estados finita con garantías de rollback:
 
 ```mermaid
-graph TD
-    AG[Antigravity AI Brain] -->|CLI / stdio / JSON puro| CTL[HardwareController]
+stateDiagram-v2
+    [*] --> S0_IDLE_AUTO : Inicio / Detección
 
-    subgraph Core Engine
-        CTL --> VAL[SafetyGuard - Validaciones y Clamps 0-100%]
-        CTL --> RB[RollbackManager - Snapshots y atexit]
-        CTL --> WD[SafetyWatchdog - Temporizadores Failsafe]
-        CTL --> LOG[AuditLogger - logs/audit_hwctl.jsonl]
-        CTL --> REG[ProviderRegistry - Detección de SO y GPU]
-    end
+    S0_IDLE_AUTO --> S1_MANUAL_HOLD : set_gpu_fan_percent / enable_manual
+    note right of S1_MANUAL_HOLD
+        RollbackManager captura
+        snapshot de estado inicial
+    end note
 
-    subgraph Hardware Providers
-        REG --> AMD_WIN[AmdGpuProvider - atiadlxx.dll / ADL SDK]
-        REG --> AMD_LNX[AmdLinuxProvider - sysfs / hwmon]
-        REG --> NV[NvidiaGpuProvider - NVAPI / Registry Stub]
-        REG --> INT[IntelGpuProvider - ControlLib Stub]
-        REG --> MOCK[MockGpuProvider - Simulación RX 580 y Fallos]
-        REG --> SYS_WIN[WindowsSystemProvider - CPU, RAM, DMI, Procs]
-        REG --> SYS_LNX[LinuxSystemProvider - /proc, /sys, Distro, Procs]
-    end
+    S1_MANUAL_HOLD --> S2_EXPERIMENT : run_fan_test / run_thermal_stress_test
+    
+    S2_EXPERIMENT --> S1_MANUAL_HOLD : Fin de paso / siguiente escalón
+    S2_EXPERIMENT --> S4_EMERGENCY : Tripwire térmico (Core >= 90°C o Hotspot >= 105°C)
+    S2_EXPERIMENT --> S4_EMERGENCY : Timeout de Watchdog (> 300s)
 
-    subgraph Hardware Real
-        AMD_WIN --> ADL_DLL[AMD Adrenalin Driver]
-        AMD_LNX --> KERNEL_DRM[Kernel amdgpu /sys/class/drm/]
-    end
+    S1_MANUAL_HOLD --> S0_IDLE_AUTO : reset_gpu_fan_control / disable_manual
+    S4_EMERGENCY --> S0_IDLE_AUTO : Fallback forzado a curva de fábrica
+    
+    S1_MANUAL_HOLD --> [*] : atexit() ejecuta rollback automático
+    S2_EXPERIMENT --> [*] : SIGINT / Crash -> Failsafe restaura auto
 ```
 
 ---
 
-## 🐧 Diferencias por Plataforma (Windows vs Linux / Arch)
+## 4. Percepción: Sensores y Telemetría
 
-`hwctl` detecta automáticamente el sistema operativo y activa el backend óptimo:
+### 4.1 `get_gpu_sensors`
+* **Tipo:** Sensor de Telemetría Dinámica.
+* **Frecuencia Máxima de Muestreo Recomendada:** 1 Hz a 10 Hz (evitar saturación de bus I2C).
+* **Canales de Medición:**
 
-| Característica | Windows 10 / 11 | Arch Linux / Linux |
-| :--- | :--- | :--- |
-| **Driver Interface** | AMD Display Library (`atiadlxx.dll`) | Kernel `amdgpu` driver vía `sysfs` / `hwmon` |
-| **Control de Ventilador** | Overdrive 5 / OverdriveN C-API | Escritura directa a `/sys/class/drm/card*/device/hwmon/hwmon*/pwm1` |
-| **Lectura de Tacómetro** | Llamadas ADL (`ADL_Overdrive5_FanSpeed_Get`) | Lectura directa de `fan1_input` (RPM en tiempo real) |
-| **Permisos Requeridos** | Consola con Administrador (UAC) | Permisos `root` / `sudo` (UID 0) |
-| **Diagnóstico de Driver** | Códigos de error numéricos de ADL | Buffer del kernel (`dmesg`) con fallos de SMC / I2C / PWM |
-| **OverDrive / Voltajes** | Sujeto a firmas de driver Adrenalin | Desbloqueo total vía parámetro `amdgpu.ppfeaturemask=0xffffffff` |
-| **Dependencia GUI** | **Ninguna** (No requiere abrir Adrenalin ni Afterburner) | **Ninguna** (No requiere X11, Wayland ni CoreCtrl) |
+| Sensor | Campo JSON | Tipo | Unidad | Origen de Hardware |
+| :--- | :--- | :--- | :--- | :--- |
+| Temperatura Núcleo | `temperature_c` | `float` | °C | Diodo térmico de silicio en el die de la GPU. |
+| Temperatura Hotspot | `hotspot_c` | `float` | °C | Punto más caliente entre matriz de diodos (Junction). |
+| Velocidad Física | `fan.rpm` | `int` | RPM | Tacómetro de pulsos (Pin 3 del conector del cooler). |
+| Porcentaje Actual | `fan.current_percent` | `float` | % | Ciclo de trabajo PWM actual reportado por driver. |
+| Porcentaje Objetivo | `fan.target_percent` | `float` | % | Valor de PWM objetivo configurado en el registro. |
+| Modo de Operación | `fan.control_mode` | `string` | enum | `"auto"` (firmware/driver) o `"manual"` (usuario/agente). |
+| Potencia Consumida | `power_w` | `float` | Watts | Sensor shunt de corriente / estimador telemetría SMC. |
+| Carga de Trabajo | `usage_percent` | `float` | % | Actividad de los Compute Units / Shaders. |
+| Reloj de Núcleo | `core_clock_mhz` | `float` | MHz | Frecuencia DPM activa del GPU Core. |
+| Reloj de Memoria | `memory_clock_mhz`| `float` | MHz | Frecuencia DPM activa del controlador VRAM. |
+| Voltaje Núcleo | `voltage_mv` | `float` | mV | Telemetría VRM (VDDC). |
 
----
-
-## 🚀 Instalación y Requisitos
-
-### Requisitos Previos
-* **Python**: 3.10 o superior (con `ctypes` y `psutil`).
-* **En Windows**:
-  * Driver de video AMD instalado (para disponer de `C:\Windows\System32\atiadlxx.dll`).
-  * Ejecutar el terminal como **Administrador** si se desea enviar comandos de escritura de ventiladores.
-* **En Linux (Arch, Fedora, Ubuntu, etc.)**:
-  * Driver `amdgpu` activo en el kernel.
-  * Ejecutar como `root` o con `sudo` para escribir en los nodos de `/sys/class/drm/`.
-
-### Instalación Local
-```powershell
-# Clonar el repositorio
-git clone https://github.com/aquinoalejandro/hwctl-for-agy.git
-cd hwctl-for-agy
-
-# Instalar dependencias
-pip install -e .
-```
-
----
-
-## 🛠 Catálogo Completo de Herramientas CLI
-
-Todos los comandos devuelven **exclusivamente JSON formateado a `stdout`**, garantizando que Antigravity pueda consumirlos directamente mediante su ejecutor de comandos (`run_command` / `subprocess`).
-
-### 1. Diagnóstico de Entorno y Sistema
-
-| Comando | Argumentos | Descripción |
-| :--- | :--- | :--- |
-| `describe-tools` | Ninguno | Devuelve el catálogo completo en formato JSON con la firma de cada herramienta para Antigravity. |
-| `check-environment` | Ninguno | Verifica elevación (Admin/root), DLLs de AMD o nodos `sysfs`, disponibilidad de OpenCL y procesos en conflicto. |
-| `get-system-info` | Ninguno | Devuelve SO (distro exacta o build de Windows), CPU, cores, RAM disponible, placa madre y procesos relevantes. |
-| `get-kernel-logs` | `[--lines 50]` | *(Linux/Arch)* Filtra las últimas líneas de `dmesg` correspondientes al driver `amdgpu` (alertas de SMC, firmware y microcódigo). |
-
-### 2. Telemetría y Consulta de GPU (Lectura Pura)
-
-| Comando | Argumentos | Descripción |
-| :--- | :--- | :--- |
-| `get-gpu-info` | `[--adapter 0]` | Modelo exacto, fabricante, VRAM, versión del driver y VBIOS/ROM. |
-| `get-gpu-sensors` | `[--adapter 0]` | Lectura en tiempo real de temperatura núcleo, hotspot, RPM, Watts, voltajes y MHz de reloj. |
-| `get-gpu-fan-status` | `[--adapter 0]` | Porcentaje objetivo/actual, RPM reportado, modo (`auto`/`manual`) y límites min/max. |
-| `get-gpu-driver-info`| `[--adapter 0]` | Estado de inicialización del driver y número de adaptadores activos. |
-| `get-gpu-vbios-info` | `[--adapter 0]` | Versión, fecha y número de parte del firmware VBIOS. |
-
-### 3. Control de Hardware (Mutaciones Seguras)
-
-| Comando | Argumentos | Descripción |
-| :--- | :--- | :--- |
-| `set-gpu-fan-percent` | `--percent <0-100>` | Fija el ventilador a un porcentaje. Valida límites, guarda snapshot previo para rollback y lee telemetría resultante. |
-| `enable-gpu-manual-fan-control` | `[--adapter 0]` | Fija el controlador en modo manual, manteniendo las RPM actuales como punto de partida. |
-| `disable-gpu-manual-fan-control`| `[--adapter 0]` | Restablece el control automático por firmware/driver. |
-| `reset-gpu-fan-control` | `[--adapter 0]` | **Failsafe**: Restaura de inmediato la curva automática por defecto del controlador. |
-
-### 4. Experimentos Controlados y Carga (Sin FurMark ni juegos)
-
-| Comando | Argumentos | Descripción |
-| :--- | :--- | :--- |
-| `run-fan-test` | `--steps 25,50,75,100`<br>`--hold 5`<br>`--interval 1` | Ejecuta una secuencia de escalones de ventilador, muestrea RPM y temperaturas en cada paso y **restaura automáticamente el estado inicial**. |
-| `start-gpu-stress` | `[--duration 30]` | Inicia una carga continua de cómputo en la GPU (OpenCL nativo) en segundo plano con auto-timeout de seguridad. |
-| `stop-gpu-stress` | Ninguno | Detiene inmediatamente cualquier carga activa de cómputo. |
-| `run-thermal-stress-test` | `--duration 20`<br>`--interval 1`<br>`--emergency-temp 90` | Aplica carga de GPU mientras toma muestras por segundo. **Cuenta con tripwire térmico**: si la temperatura toca el límite de emergencia, corta la carga al instante. |
-| `create-diagnostic-snapshot` | `[--adapter 0]` | Captura un snapshot atómico sincronizado de Sistema + GPU + Sensores + Procesos. |
-| `create-diagnostic-report` | `[--output <ruta>]` | Guarda el snapshot atómico en un archivo `.json` en disco para auditoría histórica. |
-
----
-
-## 📋 Contratos y Esquemas JSON
-
-### 1. Respuesta de Telemetría en Tiempo Real (`get-gpu-sensors`)
-```json
-{
-  "success": true,
-  "action": "get_gpu_sensors",
-  "timestamp": "2026-10-08T22:40:15.123456+00:00",
-  "data": {
-    "temperature_c": 54.0,
-    "hotspot_c": 66.8,
-    "usage_percent": 12.0,
-    "vram_usage_percent": 22.5,
-    "vram_used_mb": 1843.0,
-    "power_w": 38.5,
-    "core_clock_mhz": 1340.0,
-    "memory_clock_mhz": 2000.0,
-    "voltage_mv": 1150.0,
-    "fan": {
-      "target_percent": 45.0,
-      "current_percent": 45.0,
-      "rpm": 1450,
-      "control_mode": "auto",
-      "min_percent": 0.0,
-      "max_percent": 100.0,
-      "min_rpm": 0,
-      "max_rpm": 3200
-    }
-  }
-}
-```
-
-### 2. Respuesta de Verificación de Acción (`set-gpu-fan-percent`)
-Permite a Antigravity contrastar lo solicitado contra lo efectivamente reportado por el hardware:
-```json
-{
-  "success": true,
-  "action": "set_gpu_fan_percent",
-  "timestamp": "2026-10-08T22:41:00.654321+00:00",
-  "requested_percent": 80.0,
-  "reported_percent": 80.0,
-  "reported_rpm": 2680,
-  "temperature_c": 51.5,
-  "power_w": 40.2
-}
-```
-
-### 3. Respuesta de Error Estructurado
-```json
-{
-  "success": false,
-  "action": "set_gpu_fan_percent",
-  "error": {
-    "code": "SAFETY_VIOLATION",
-    "message": "Requested fan speed 120.0% is out of safe range [0.0, 100.0]."
-  },
-  "timestamp": "2026-10-08T22:42:10.000000+00:00"
-}
-```
-
-### 4. Diagnóstico de Entorno (`check-environment`)
+### 4.2 `check_environment`
+* **Tipo:** Sensor de Estado Operacional del Sistema Anfitrión.
+* **Propósito:** Evalúa si el agente dispone de los privilegios y módulos de kernel para actuar.
+* **Contrato de Salida:**
 ```json
 {
   "success": true,
   "action": "check_environment",
-  "timestamp": "2026-10-08T22:43:00.000000+00:00",
   "data": {
     "is_admin": true,
-    "adl_available": true,
+    "adl_available": false,
     "opencl_available": true,
     "active_gpu_vendor": "AMD",
-    "conflicting_processes": ["MSIAfterburner.exe"],
+    "conflicting_processes": ["corectrl"],
     "notes": [
-      "Detected OS: Windows.",
-      "Detected hardware tuning tools running: MSIAfterburner.exe. They may overwrite manual fan settings."
+      "Detected OS: Arch Linux (Kernel 6.12.1-arch1-1).",
+      "Arch Linux detected: provides maximum freedom via direct sysfs/hwmon nodes and dmesg.",
+      "Running as root (UID 0): direct PWM writing and hardware overrides are fully authorized."
     ]
   }
 }
@@ -235,135 +154,152 @@ Permite a Antigravity contrastar lo solicitado contra lo efectivamente reportado
 
 ---
 
-## 🛡 Mecanismos de Seguridad y Rollback
+## 5. Actuación: Modificación de Registros y Controladores
 
-Para evitar que la GPU quede desprotegida o sufra daño térmico durante los experimentos de Antigravity:
+### 5.1 `set_gpu_fan_percent`
+* **Tipo:** Actuador de Ciclo de Trabajo PWM.
+* **Precondiciones:**
+  * Privilegios de Administrador (Windows) o `root` (Linux).
+  * Valor de porcentaje en rango cerrado `[0.0, 100.0]`.
+* **Invariantes y Efectos Secundarios:**
+  * Se registra un snapshot previo en el `RollbackManager`.
+  * En Windows: Se invoca `ADL_Overdrive5_FanSpeed_Set`.
+  * En Linux: Se escribe `1` en `pwm1_enable` y `round(pct * 255 / 100)` en `pwm1`.
+  * Se realiza una lectura inmediata posterior para reportar `reported_percent` y `reported_rpm`.
+* **Contrato de Salida:**
+```json
+{
+  "success": true,
+  "action": "set_gpu_fan_percent",
+  "timestamp": "2026-10-08T22:45:00.000000+00:00",
+  "requested_percent": 80.0,
+  "reported_percent": 80.0,
+  "reported_rpm": 1127,
+  "temperature_c": 62.0,
+  "power_w": 45.0
+}
+```
 
-1. **Clamping Estricto [0, 100]%**: `SafetyGuard.validate_fan_percent()` rechaza cualquier valor fuera de rango antes de interactuar con el driver.
-2. **Snapshot de Estado Previo**: `RollbackManager` captura el estado original del ventilador antes de aplicar cualquier mutación reversible.
-3. **Restauración en `atexit`**: Si el proceso se interrumpe, se cierra la consola o se produce una excepción no controlada, el manejador de salida de Python ejecuta inmediatamente `reset_gpu_fan_control()`.
-4. **Watchdog de Timeout**: Un hilo en segundo plano cancelable garantiza que ninguna prueba manual pueda dejar a la GPU desatendida por más tiempo del estipulado (máximo 5 minutos).
-5. **Tripwire Térmico de Emergencia**: Durante `run_thermal_stress_test`, si el núcleo alcanza 90 °C o el hotspot alcanza 105 °C, la carga de cómputo **se cancela inmediatamente** y se restablece la refrigeración completa.
-6. **Auditoría en JSONL**: Cada orden, parámetro, estado anterior, estado posterior y resultado se escribe secuencialmente en `logs/audit_hwctl.jsonl`.
+### 5.2 `reset_gpu_fan_control`
+* **Tipo:** Actuador de Failsafe / Restauración.
+* **Efecto:**
+  * Elimina cualquier bloqueo de velocidad fija.
+  * Restaura el bit de control a modo automático (`pwm1_enable = 2` en Linux / default en ADL).
+  * Limpia el registro del `RollbackManager`.
 
 ---
 
-## 🧪 Modo de Simulación y Laboratorio (Mock)
+## 6. Experimentos Controlados y Generación de Carga
 
-Si no se cuenta con una GPU AMD física conectada en el momento (por ejemplo, en entornos de desarrollo o integración continua), se puede forzar el proveedor de simulación:
+Antigravity puede orquestar pruebas estáticas y dinámicas directamente sin requerir aplicaciones gráficas externas.
 
-```powershell
-# Simular una RX 580 en estado normal y saludable:
-python -m hwctl.cli --provider mock --mock-fault none get-gpu-sensors
+### 6.1 `run_fan_test` (Prueba Estática Escalonada)
+* **Objetivo para el Agente:** Determinar la curva de respuesta PWM vs. RPM en condiciones de reposo.
+* **Parámetros:**
+  * `--steps`: Lista separada por comas (ej: `25,50,75,100`).
+  * `--hold`: Segundos de permanencia por escalón (ej: `3.0`).
+  * `--interval`: Frecuencia de muestreo durante la permanencia (ej: `1.0`).
+* **Comportamiento Failsafe:** Al concluir el último escalón (o si ocurre un error), **restablece automáticamente el control original**.
 
-# Simular el síntoma de fallo exacto (tacómetro clavado en 1127 RPM):
-python -m hwctl.cli --provider mock --mock-fault stuck_fan run-fan-test --steps 25,50,75,100 --hold 2
-
-# Simular rechazo de comandos por parte del driver/hardware:
-python -m hwctl.cli --provider mock --mock-fault no_fan_control set-gpu-fan-percent --percent 50
+### 6.2 `run_thermal_stress_test` (Prueba Dinámica con Carga)
+* **Objetivo para el Agente:** Evaluar si el cooler disipa calor bajo carga térmica real y si el firmware eleva el ventilador de forma autónoma.
+* **Mecanismo de Generación de Carga:** Compila y despacha un kernel OpenCL nativo directo a los Shaders/CUs de la GPU, elevando el uso a ~99% y el consumo a potencia nominal TDP (~145W-185W en RX 580).
+* **Tripwire Térmico Autónomo:**
+  * Si `temperature_c >= emergency_temp` (default `90.0°C`) o `hotspot_c >= emergency_hotspot` (default `105.0°C`):
+  * La carga de cómputo se interrumpe en milisegundos.
+  * Se aborta la prueba con `aborted_by_safety: true` y `abort_reason: "CORE_TEMP_TRIP"`.
+  * Se restablece la ventilación.
+* **Esquema de Salida:**
+```json
+{
+  "success": true,
+  "action": "run_thermal_stress_test",
+  "data": {
+    "success": true,
+    "duration_seconds": 15.0,
+    "aborted_by_safety": false,
+    "abort_reason": null,
+    "initial_temperature": 52.0,
+    "peak_temperature": 84.5,
+    "final_temperature": 56.0,
+    "initial_rpm": 1127,
+    "peak_rpm": 1127,
+    "final_rpm": 1127,
+    "samples": [
+      {
+        "elapsed_seconds": 1.0,
+        "temperature_c": 58.0,
+        "hotspot_c": 70.0,
+        "rpm": 1127,
+        "fan_percent": 85.0,
+        "usage_percent": 99.0,
+        "power_w": 145.0
+      }
+    ]
+  }
+}
 ```
 
 ---
 
-## 🔍 Flujo de Diagnóstico Típico para Antigravity
+## 7. Árbol de Correlación Diagnóstica para Antigravity
 
-Un ciclo de razonamiento de Antigravity utilizando `hwctl` se estructura de la siguiente manera:
+La siguiente tabla resume cómo Antigravity debe relacionar las lecturas de `hwctl` con las hipótesis de falla física:
 
-```text
-1. [Verificación de Entorno]
-   hwctl check-environment
-   └── ¿Corre con privilegios suficientes? ¿Hay herramientas de terceros interfiriendo?
-
-2. [Identificación de Hardware]
-   hwctl get-gpu-info
-   └── Modelo, versión de driver, VBIOS reportada.
-
-3. [Prueba de Respuesta en Reposo]
-   hwctl run-fan-test --steps 25,50,75,100 --hold 3
-   └── ¿Varían los RPM al cambiar el PWM objetivo?
-       ├── SÍ: El controlador PWM y el tacómetro responden.
-       └── NO (clavado en 1127 RPM): Falla física del sensor, PWM cortado o tabla fija en VBIOS.
-
-4. [Prueba Térmica Dinámica Bajo Carga]
-   hwctl run-thermal-stress-test --duration 20 --emergency-temp 90
-   └── Evaluar serie temporal:
-       ├── ¿La temperatura sube de 55°C a 85°C?
-       └── ¿El driver eleva el fan_percent automático? ¿Reacciona el tacómetro físico o permanece estático?
-
-5. [Extracción de Evidencia del Kernel (En Arch Linux)]
-   hwctl get-kernel-logs --lines 50
-   └── Inspeccionar si el kernel arrojó: "Failed to send message to SMC" o fallos de I2C.
-
-6. [Restauración y Reporte Final]
-   hwctl reset-gpu-fan-control
-   hwctl create-diagnostic-report --output logs/informe_final.json
-```
+| `target_percent` | `reported_percent` | `reported_rpm` | `temperature_c` | Diagnóstico Deductivo de Antigravity |
+| :---: | :---: | :---: | :---: | :--- |
+| `100%` | `100%` | `~1127` (fijo) | Creciendo | **Falla de hardware:** Conector PWM de 4 pines cortado, pin de tacómetro flotante, o VBIOS de minería con tabla estática fija. |
+| `100%` | `100%` | `0` | Creciendo | **Falla mecánica/física:** Ventiladores trabados mecánicamente, cable desconectado o bobina quemada. |
+| `100%` | `< 50%` | Coincide | Creciendo | **Conflicto de software:** Herramienta de terceros (Afterburner / CoreCtrl) sobreescribiendo el registro continuamente. |
+| `100%` | `100%` | `> 2800` | `> 85°C` (muy alta) | **Falla de disipación térmica:** Ventiladores operan a pleno pero la pasta térmica está degradada (pump-out) o heatpipes pinchados. |
+| `< 40%` | `< 40%` | `0` | `< 50°C` | **Comportamiento normal:** Modo Zero-RPM activo por firmware (ventiladores apagados en reposo). |
 
 ---
 
-## 🧪 Ejecución de Pruebas Automatizadas
+## 8. Formato de Invocación e Integración de Procesos
 
-La suite incluye pruebas exhaustivas que validan modelos, serialización JSON, validaciones de seguridad, watchdog, simulación de ventiladores clavados, generador de estrés y compatibilidad multiplataforma:
+Antigravity interactúa con `hwctl` mediante llamadas de consola deterministas.
 
-```powershell
+### Convenciones de Entrada/Salida
+1. **stdout:** Contiene **únicamente** la estructura JSON de la respuesta.
+2. **stderr:** Reservado para mensajes de depuración, trazas o advertencias de fallback. Nunca se mezcla con la salida JSON.
+3. **Exit Code:**
+   * `0`: Acción ejecutada con éxito (`success: true`).
+   * `1`: Fallo de validación, violación de seguridad o error de hardware (`success: false`).
+
+### Matriz de Códigos de Error (`HwctlError`)
+
+| Código | Significado | Acción Sugerida para Antigravity |
+| :--- | :--- | :--- |
+| `PERMISSION_DENIED` | Operación requiere permisos de Administrador o root. | Solicitar al usuario elevar el proceso o ejecutar con `sudo`. |
+| `SAFETY_VIOLATION` | Parámetro fuera de los límites de seguridad física. | Ajustar el parámetro a rango seguro (ej: clamps `[0, 100]`). |
+| `FAN_CONTROL_UNAVAILABLE` | Driver o GPU no exponen interfaz de escritura. | Concluir que el driver bloquea Overdrive o verificar VBIOS. |
+| `ACTION_TIMEOUT` | La operación excedió el tiempo máximo estipulado. | Abortar el paso y verificar telemetría actual. |
+| `DRIVER_ERROR` | Error interno de la biblioteca ADL o del módulo amdgpu. | Consultar `get-kernel-logs` (Linux) o verificar estado del driver. |
+| `HARDWARE_NOT_FOUND` | No se detectó adaptador AMD compatible activo. | Comprobar conexión PCI Express o utilizar `--provider mock`. |
+
+---
+
+## 9. Registro de Auditoría Persistente (`logs/audit_hwctl.jsonl`)
+
+Cada intervención, lectura y cambio de estado se anota secuencialmente en formato **JSON Lines** en `logs/audit_hwctl.jsonl`:
+
+```json
+{"timestamp": "2026-10-08T22:50:01.100Z", "event_type": "safety_intervention", "tool": "rollback_manager.capture_state", "parameters": {"captured_state": {"fan": {"target_percent": 40.0, "rpm": 1127, "control_mode": "auto"}}}}
+{"timestamp": "2026-10-08T22:50:01.150Z", "event_type": "action", "tool": "set_gpu_fan_percent", "parameters": {"requested_percent": 100.0}, "before_state": {"reported_percent": 40.0}, "after_state": {"reported_percent": 100.0, "reported_rpm": 1127}, "result": {"success": true}}
+{"timestamp": "2026-10-08T22:50:06.200Z", "event_type": "safety_intervention", "tool": "rollback_manager.execute_rollback", "result": {"success": true}}
+```
+
+Este log permite que Antigravity o el usuario reconstruyan retrospectivamente la línea temporal exacta de cualquier investigación.
+
+---
+
+## 10. Validación de Integridad (Suite Automatizada)
+
+Para verificar que todos los contratos sensomotores, validaciones de seguridad y abstracciones de plataforma funcionan correctamente:
+
+```bash
 python -m unittest discover tests
 ```
 
-Salida esperada:
-```text
-Ran 25 tests in 14.507s
-OK
-```
-
----
-
-## 📁 Estructura del Proyecto
-
-```text
-hwctl-for-agy/
-├── pyproject.toml              # Configuración del paquete y punto de entrada CLI
-├── README.md                   # Documentación completa y referencia de la API
-├── hwctl/
-│   ├── __init__.py             # Versión del paquete
-│   ├── cli.py                  # Interfaz de línea de comandos para Antigravity
-│   ├── core/
-│   │   ├── controller.py       # Fachada unificada HardwareController
-│   │   ├── exceptions.py       # Jerarquía de errores tipados (HwctlError)
-│   │   ├── models.py           # Dataclasses de sensores, acciones y telemetría
-│   │   ├── safety.py           # SafetyGuard, RollbackManager y SafetyWatchdog
-│   │   ├── logger.py           # Auditoría en formato JSON Lines
-│   │   └── registry.py         # Descubrimiento dinámico de proveedores de hardware y SO
-│   ├── providers/
-│   │   ├── base.py             # Interfaces abstractas BaseGpuProvider y BaseSystemProvider
-│   │   ├── amd/
-│   │   │   ├── adl.py          # Bindings ctypes para atiadlxx.dll (ADL SDK en Windows)
-│   │   │   ├── provider.py     # Implementación de AmdGpuProvider para Windows
-│   │   │   └── linux.py        # Implementación de AmdLinuxProvider para Linux/Arch (sysfs/hwmon)
-│   │   ├── mock/
-│   │   │   └── provider.py     # Simulador de RX 580 con modos de falla
-│   │   ├── nvidia/
-│   │   │   └── provider.py     # Base extensible para GPUs NVIDIA
-│   │   ├── intel/
-│   │   │   └── provider.py     # Base extensible para GPUs Intel Arc/Xe
-│   │   └── system/
-│   │       ├── windows.py      # Telemetría de host Windows (CPU, RAM, DMI, procesos)
-│   │       └── linux.py        # Telemetría de host Linux (distro, /proc, /sys, procesos)
-│   └── experiments/
-│       ├── fan_step.py         # Ejecutor de pruebas escalonadas de ventilador
-│       └── stress.py           # Generador de estrés OpenCL y prueba térmica con tripwire
-├── logs/
-│   └── audit_hwctl.jsonl       # Registro de auditoría cronológico de eventos
-└── tests/
-    ├── test_models.py          # Pruebas de contratos y serialización JSON
-    ├── test_safety.py          # Pruebas de límites, clamps y rollback
-    ├── test_experiments.py     # Pruebas de respuesta de escalones de ventilador
-    ├── test_controller.py      # Pruebas de la API de HardwareController
-    ├── test_stress.py          # Pruebas de estrés térmico y corte de emergencia
-    └── test_linux.py           # Pruebas de proveedores y detección de Linux
-```
-
----
-
-## 📄 Licencia
-
-Este proyecto está bajo la Licencia MIT. Desarrollado como capa de control físico para el agente de IA **Antigravity**.
+*Total de pruebas unitarias:* **25 tests automatizados** cubriendo modelos, clamps de seguridad, watchdog, simulación de ventiladores clavados, carga OpenCL y compatibilidad con Linux/Arch.
