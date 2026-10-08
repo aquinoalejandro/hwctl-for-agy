@@ -4,7 +4,7 @@ Enables multi-vendor extensibility (AMD, NVIDIA, Intel, and virtual Mock for tes
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hwctl.core.models import ActionResult, FanStatus, GpuInfo, GpuSensors, ProcessInfo, SystemInfo
 
@@ -78,6 +78,25 @@ class BaseGpuProvider(ABC):
         """Cleans up low-level library handles and restores safe state."""
         pass
 
+    def list_adapters(self) -> List[Dict[str, Any]]:
+        """Returns summary info for every detected GPU adapter on this vendor.
+        Default implementation returns a single-adapter list from get_gpu_info()."""
+        try:
+            info = self.get_gpu_info(0)
+            return [info.to_dict()]
+        except Exception:
+            return []
+
+    def get_power_states(self, adapter_index: int = 0) -> Dict[str, Any]:
+        """Queries current and available performance levels / clock-power states.
+        Returns best-effort data; not all drivers expose full P-state tables."""
+        return {"current_performance_level": "unknown", "states": [], "note": "Not supported by this provider."}
+
+    def get_display_outputs(self, adapter_index: int = 0) -> List[Dict[str, Any]]:
+        """Enumerates connected display outputs (monitors, HDMI, DP, etc.).
+        Default returns empty list if provider does not implement."""
+        return []
+
 
 class BaseSystemProvider(ABC):
     """Abstract interface for host OS, CPU, RAM, and process telemetry."""
@@ -91,3 +110,8 @@ class BaseSystemProvider(ABC):
     def get_relevant_processes(self) -> List[ProcessInfo]:
         """Identifies active processes that may conflict with GPU control or cause heavy load."""
         pass
+
+    def get_event_logs(self, source_filter: str = "Display", max_entries: int = 30) -> List[Dict[str, Any]]:
+        """Reads OS event logs filtered by source (e.g. 'Display', 'nvlddmkm', 'amdgpu').
+        Default implementation returns empty list."""
+        return []

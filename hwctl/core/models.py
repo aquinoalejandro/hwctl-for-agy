@@ -245,3 +245,42 @@ class ThermalStressResult:
         d["samples"] = [s if isinstance(s, dict) else s.to_dict() for s in self.samples]
         return d
 
+
+@dataclass
+class SensorTimeSeries:
+    """Collection of sensor readings taken at regular intervals over a time window."""
+    sample_count: int
+    duration_seconds: float
+    interval_seconds: float
+    samples: List[GpuSensors] = field(default_factory=list)
+    statistics: Optional[Dict[str, Any]] = None
+    timestamp: str = field(default_factory=current_iso_timestamp)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "sample_count": self.sample_count,
+            "duration_seconds": self.duration_seconds,
+            "interval_seconds": self.interval_seconds,
+            "samples": [s.to_dict() for s in self.samples],
+            "timestamp": self.timestamp,
+        }
+        if self.statistics:
+            d["statistics"] = self.statistics
+        return d
+
+
+@dataclass
+class SnapshotComparison:
+    """Result of comparing two diagnostic snapshots for temporal anomaly detection."""
+    baseline_timestamp: str
+    current_timestamp: str
+    deltas: Dict[str, Any] = field(default_factory=dict)
+    anomalies: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "baseline_timestamp": self.baseline_timestamp,
+            "current_timestamp": self.current_timestamp,
+            "deltas": self.deltas,
+            "anomalies": self.anomalies,
+        }

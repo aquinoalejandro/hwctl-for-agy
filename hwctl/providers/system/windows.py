@@ -6,7 +6,7 @@ and monitors running processes that may conflict with GPU hardware control.
 
 import platform
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import winreg
 
 import psutil
@@ -114,3 +114,114 @@ class WindowsSystemProvider(BaseSystemProvider):
         # Sort so hardware tools appear first, followed by highest CPU consumers
         relevant.sort(key=lambda p: (not p.is_hardware_tool, -p.cpu_percent))
         return relevant[:20]  # Cap at top 20
+
+    def get_event_logs(self, source_filter: str = "Display", max_entries: int = 30) -> List[Dict[str, Any]]:
+        """Reads Windows Event Log entries related to GPU/display subsystem.
+
+        Searches System and Application logs for events from display/GPU driver sources
+        such as 'Display', 'nvlddmkm', 'amdwddmg', 'dxgkrnl', 'Kernel-Power', etc.
+        """
+        import json as _json
+        import subprocess
+
+        # Known event log sources relevant to GPU diagnostics
+        gpu_sources = [
+            "Display",
+            "nvlddmkm",
+            "amdwddmg",
+            "atikmdag",
+            "dxgkrnl",
+            "dxgmms1",
+            "dxgmms2",
+            "Kernel-Power",
+            "volmgr",
+            "disk",
+            "amdgpu",
+        ]
+
+        # Build the source match filter from input + known GPU sources
+        filter_sources = list({source_filter.lower()} | {s.lower() for s in gpu_sources})
+
+        ps_script = f"""
+$events = @()
+try {{
+    $sysEvents = Get-WinEvent -FilterHashtable @{{LogName='System'; Level=1,2,3; StartTime=(Get-Date).AddDays(-7)}} -MaxEvents {max_entries * 3} -ErrorAction SilentlyContinue
+    if ($sysEvents) {{ $events += $sysEvents }}
+}} catch {{}}
+try {{
+    $appEvents = Get-WinEvent -FilterHashtable @{{LogName='Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-7)}} -MaxEvents {max_entries * 2} -ErrorAction SilentlyContinue
+    if ($appEvents) {{ $events += $appEvents }}
+}} catch {{}}
+
+$filterSources = @({','.join('"' + s + '"' for s in filter_sources)})
+$filtered = $events | Where-Object {{
+    $src = $_.ProviderName.ToLower()
+    $msg = $_.Message.ToLower()
+    ($filterSources -contains $src) -or ($msg -match 'gpu|display|graphics|tdr|dxgk|amdgpu|radeon|nvidia|d3d|directx')
+}} | Select-Object -First {max_entries}
+
+$result = $filtered | ForEach-Object {{
+    @{{
+        TimeCreated = $_.TimeCreated.ToString('o')
+        ProviderName = $_.ProviderName
+        Id = $_.Id
+        LevelDisplayName = $_.LevelDisplayName
+        Message = if ($_.Message.Length -gt 500) {{ $_.Message.Substring(0,500) + '...' }} else {{ $_.Message }}
+    }}
+}}
+$result | ConvertTo-Json -Depth 3 -Compress
+"""
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return []
+
+            parsed = _json.loads(result.stdout.strip())
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            return parsed[:max_entries]
+        except Exception:
+            return []
+
+    def get_display_info(self) -> List[Dict[str, Any]]:
+        """Enumerates connected display devices via Windows registry / WMI."""
+        import subprocess
+        import json as _json
+
+        ps_script = """
+$monitors = Get-CimInstance -ClassName Win32_DesktopMonitor -ErrorAction SilentlyContinue | ForEach-Object {
+    @{
+        Name = $_.Name
+        DeviceID = $_.DeviceID
+        ScreenWidth = $_.ScreenWidth
+        ScreenHeight = $_.ScreenHeight
+        Status = $_.Status
+        Availability = $_.Availability
+    }
+}
+$displays = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object {
+    @{
+        Name = $_.Name
+        AdapterRAM_MB = [math]::Round($_.AdapterRAM / 1MB, 0)
+        DriverVersion = $_.DriverVersion
+        DriverDate = if ($_.DriverDate) { $_.DriverDate.ToString('o') } else { $null }
+        VideoMode = $_.VideoModeDescription
+        CurrentRefreshRate = $_.CurrentRefreshRate
+        Status = $_.Status
+    }
+}
+@{ monitors = $monitors; adapters = $displays } | ConvertTo-Json -Depth 3 -Compress
+"""
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return [_json.loads(result.stdout.strip())]
+        except Exception:
+            pass
+        return []

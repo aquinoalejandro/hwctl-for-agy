@@ -268,6 +268,74 @@ class AmdGpuProvider(BaseGpuProvider):
             }
         return {"version": "Unknown", "status": "Not reported by driver"}
 
+    def list_adapters(self) -> List[Dict[str, Any]]:
+        """Enumerates all detected AMD Radeon GPUs on the system."""
+        if not self._initialized:
+            try:
+                self.initialize()
+            except Exception:
+                return []
+
+        if not self._active_adapters:
+            return []
+
+        _, num = self._adl.get_number_of_adapters()
+        _, adapters = self._adl.get_adapter_info(num)
+        result = []
+        for idx in self._active_adapters:
+            info = next((a for a in adapters if a.iAdapterIndex == idx), None)
+            entry: Dict[str, Any] = {"adapter_index": idx}
+            if info:
+                entry["model"] = info.strAdapterName.decode("utf-8", errors="ignore").strip()
+                entry["display_name"] = info.strDisplayName.decode("utf-8", errors="ignore").strip()
+                entry["bus_number"] = info.iBusNumber
+                entry["device_number"] = info.iDeviceNumber
+                entry["vendor_id"] = info.iVendorID
+                entry["present"] = bool(info.iPresent)
+            result.append(entry)
+        return result
+
+    def get_power_states(self, adapter_index: int = 0) -> Dict[str, Any]:
+        """Queries current performance level, clocks, and voltage via Overdrive 5 Activity."""
+        idx = self._ensure_ready(adapter_index)
+        act_status, act = self._adl.get_activity(idx)
+        if act_status != ADL_OK or not act:
+            return {"current_performance_level": "unknown", "states": [], "note": "ADL Activity query failed."}
+
+        return {
+            "current_performance_level": act.iCurrentPerformanceLevel,
+            "engine_clock_mhz": round(float(act.iEngineClock) / 100.0, 1) if act.iEngineClock > 0 else None,
+            "memory_clock_mhz": round(float(act.iMemoryClock) / 100.0, 1) if act.iMemoryClock > 0 else None,
+            "voltage_mv": act.iVddc if act.iVddc > 0 else None,
+            "gpu_activity_percent": act.iActivityPercent,
+            "bus_speed": act.iCurrentBusSpeed,
+            "bus_lanes_current": act.iCurrentBusLanes,
+            "bus_lanes_max": act.iMaximumBusLanes,
+        }
+
+    def get_display_outputs(self, adapter_index: int = 0) -> List[Dict[str, Any]]:
+        """Detects connected display outputs from adapter info entries."""
+        if not self._initialized:
+            try:
+                self.initialize()
+            except Exception:
+                return []
+
+        _, num = self._adl.get_number_of_adapters()
+        _, adapters = self._adl.get_adapter_info(num)
+        outputs = []
+        for a in adapters:
+            if a.iAdapterIndex in self._active_adapters:
+                display_name = a.strDisplayName.decode("utf-8", errors="ignore").strip()
+                if display_name:
+                    outputs.append({
+                        "adapter_index": a.iAdapterIndex,
+                        "display_name": display_name,
+                        "os_display_index": a.iOSDisplayIndex,
+                        "present": bool(a.iPresent),
+                    })
+        return outputs
+
     def shutdown(self) -> None:
         if self._initialized:
             try:
@@ -276,3 +344,4 @@ class AmdGpuProvider(BaseGpuProvider):
                 pass
             self._adl.destroy()
             self._initialized = False
+
