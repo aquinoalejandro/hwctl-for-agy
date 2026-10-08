@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-10-08T21:44:25.211439+00:00",
+  "system": {
+    "os_name": "Windows",
+    "os_version": "11",
+    "os_build": "10.0.26300",
+    "cpu_model": "AMD Ryzen 7 7435HS",
+    "cpu_cores_physical": 8,
+    "cpu_cores_logical": 16,
+    "ram_total_mb": 32586.7,
+    "ram_available_mb": 22084.0,
+    "motherboard_vendor": "ASUSTeK COMPUTER INC.",
+    "motherboard_product": "FA506NCR",
+    "relevant_processes": [],
+    "timestamp": "2026-10-08T21:44:25.211342+00:00"
+  },
+  "gpu": {
+    "adapter_index": 0,
+    "vendor": "AMD",
+    "model": "Radeon RX 580 Series (Simulated)",
+    "sub_vendor": "Sapphire Technology Limited",
+    "vram_mb": 8192,
+    "driver_version": "31.0.21912.14 (Adrenalin 23.11.1)",
+    "vbios_version": "113-1E3660U-O51",
+    "power_limit_w": 185.0,
+    "thermal_limit_c": 85.0,
+    "is_primary": true
+  },
+  "driver": {
+    "vendor": "AMD",
+    "driver_version": "31.0.21912.14",
+    "branch": "Adrenalin 23.11.1",
+    "simulation": true
+  },
+  "vbios": {
+    "part_number": "113-1E3660U-O51",
+    "version": "015.050.002.001.000000",
+    "date": "2018/04/10"
+  },
+  "sensors": {
+    "temperature_c": 49.0,
+    "hotspot_c": 60.8,
+    "usage_percent": 15.0,
+    "vram_usage_percent": 22.5,
+    "vram_used_mb": 1843.0,
+    "power_w": 42.0,
+    "core_clock_mhz": 1340.0,
+    "memory_clock_mhz": 2000.0,
+    "voltage_mv": 1150.0,
+    "timestamp": "2026-10-08T21:44:25.211427+00:00",
+    "fan": {
+      "target_percent": 40.0,
+      "current_percent": 40.0,
+      "rpm": 1760,
+      "control_mode": "auto",
+      "min_percent": 0.0,
+      "max_percent": 100.0,
+      "min_rpm": 0,
+      "max_rpm": 3200
+    }
+  }
+}

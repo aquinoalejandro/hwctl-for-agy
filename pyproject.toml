@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hwctl"
+version = "0.1.0"
+description = "Hardware Diagnostic and Control Layer for Antigravity AI Agent on Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "psutil>=5.9.0",
+]
+
+[project.scripts]
+hwctl = "hwctl.cli:main"
